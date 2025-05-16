@@ -2,7 +2,7 @@ from flask import Flask, render_template, request, redirect, url_for, send_from_
 from pathlib import Path
 import os
 
-from download import download_and_build_pdf  # Adjust import if needed
+from download import download_and_build_pdf_in_memory  # Adjust import if needed
 
 app = Flask(__name__)
 app.secret_key = "lenhatanh"
@@ -10,6 +10,8 @@ BASE_DIR = Path(__file__).resolve().parent
 DOWNLOAD_DIR = BASE_DIR / "downloads"
 DOWNLOAD_DIR.mkdir(exist_ok=True)
 
+
+from flask import send_file
 
 @app.route("/", methods=["GET", "POST"])
 def index():
@@ -20,18 +22,23 @@ def index():
             return redirect(url_for("index"))
 
         folder_name = request.form.get("folder_name", "book")
-        pdf_name = folder_name + ".pdf"
-        dest_folder = DOWNLOAD_DIR / folder_name
+        pdf_filename = folder_name + ".pdf"
 
         try:
-            download_and_build_pdf(reader_url=url, dest_folder=dest_folder, pdf_name=pdf_name)
-            flash(f"Download complete: {pdf_name}")
-            return redirect(url_for("download_file", folder=folder_name, filename=pdf_name))
+            pdf_buffer = download_and_build_pdf_in_memory(reader_url=url)
+            # Send PDF buffer as downloadable file response
+            return send_file(
+                pdf_buffer,
+                mimetype="application/pdf",
+                as_attachment=True,
+                download_name=pdf_filename,
+            )
         except Exception as e:
             flash(f"Error: {str(e)}")
             return redirect(url_for("index"))
 
     return render_template("index.html")
+
 
 
 from flask import after_this_request
