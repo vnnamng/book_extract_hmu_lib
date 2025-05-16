@@ -1,0 +1,62 @@
+from flask import Flask, render_template, request, redirect, url_for, send_from_directory, flash
+from pathlib import Path
+import os
+
+from download import download_and_build_pdf  # Adjust import if needed
+
+app = Flask(__name__)
+app.secret_key = "lenhatanh"
+BASE_DIR = Path(__file__).resolve().parent
+DOWNLOAD_DIR = BASE_DIR / "downloads"
+DOWNLOAD_DIR.mkdir(exist_ok=True)
+
+
+@app.route("/", methods=["GET", "POST"])
+def index():
+    if request.method == "POST":
+        url = request.form.get("reader_url")
+        if not url:
+            flash("Please provide a valid FullBookReader URL.")
+            return redirect(url_for("index"))
+
+        folder_name = request.form.get("folder_name", "book")
+        pdf_name = folder_name + ".pdf"
+        dest_folder = DOWNLOAD_DIR / folder_name
+
+        try:
+            download_and_build_pdf(reader_url=url, dest_folder=dest_folder, pdf_name=pdf_name)
+            flash(f"Download complete: {pdf_name}")
+            return redirect(url_for("download_file", folder=folder_name, filename=pdf_name))
+        except Exception as e:
+            flash(f"Error: {str(e)}")
+            return redirect(url_for("index"))
+
+    return render_template("index.html")
+
+
+from flask import after_this_request
+import threading
+import time
+import shutil
+
+@app.route("/download/<folder>/<filename>")
+def download_file(folder, filename):
+    file_path = DOWNLOAD_DIR / folder / filename
+
+    @after_this_request
+    def remove_folder(response):
+        def delayed_delete():
+            time.sleep(5)  # Wait for 5 seconds to ensure file is sent
+            try:
+                shutil.rmtree(DOWNLOAD_DIR / folder)
+                print(f"Deleted folder: {folder}")
+            except Exception as e:
+                print(f"Failed to delete {folder}: {e}")
+        threading.Thread(target=delayed_delete).start()
+        return response
+
+    return send_from_directory(DOWNLOAD_DIR / folder, filename, as_attachment=True)
+
+
+if __name__ == "__main__":
+    app.run(debug=True)

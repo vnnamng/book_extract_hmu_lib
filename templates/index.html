@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Book Downloader</title>
+  </head>
+  <body>
+    <h1>Download Book from thuvien.hmu.edu.vn</h1>
+    {% with messages = get_flashed_messages() %} {% if messages %}
+    <ul>
+      {% for msg in messages %}
+      <li>{{ msg }}</li>
+      {% endfor %}
+    </ul>
+    {% endif %} {% endwith %}
+
+    <form method="post">
+      <label for="reader_url">FullBookReader URL:</label><br />
+      <input type="text" name="reader_url" size="80" required /><br /><br />
+
+      <label for="folder_name">Folder/PDF name (optional):</label><br />
+      <input type="text" name="folder_name" /><br /><br />
+
+      <button type="submit">Download & Convert</button>
+    </form>
+  </body>
+</html>
