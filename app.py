@@ -56,7 +56,3 @@ def download_file(folder, filename):
         return response
 
     return send_from_directory(DOWNLOAD_DIR / folder, filename, as_attachment=True)
-
-
-if __name__ == "__main__":
-    app.run(debug=True)
