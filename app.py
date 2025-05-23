@@ -1,10 +1,12 @@
 from flask import Flask, render_template, request, redirect, url_for, send_from_directory, flash
 from pathlib import Path
 import os
+from flask_cors import CORS
 
 from download_concurrent import download_and_build_pdf_in_memory  # Adjust import if needed
 
 app = Flask(__name__)
+CORS(app)
 app.secret_key = "lenhatanh"
 BASE_DIR = Path(__file__).resolve().parent
 DOWNLOAD_DIR = BASE_DIR / "downloads"
