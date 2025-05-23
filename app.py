@@ -2,7 +2,7 @@ from flask import Flask, render_template, request, redirect, url_for, send_from_
 from pathlib import Path
 import os
 
-from download import download_and_build_pdf_in_memory  # Adjust import if needed
+from download_concurrent import download_and_build_pdf_in_memory  # Adjust import if needed
 
 app = Flask(__name__)
 app.secret_key = "lenhatanh"
@@ -63,3 +63,6 @@ def download_file(folder, filename):
         return response
 
     return send_from_directory(DOWNLOAD_DIR / folder, filename, as_attachment=True)
+
+if __name__ == "__main__":
+    app.run(debug=True)
