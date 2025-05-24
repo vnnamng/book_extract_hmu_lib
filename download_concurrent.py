@@ -91,21 +91,26 @@ def download_images_to_dir(reader_url: str, out_dir: str | Path, max_workers: in
 
     print(f"✓ Downloaded {total_pages} images → {out_dir}")
 
+from fpdf import FPDF
 
 def compile_dir_to_pdf(images_dir: str | Path, output_pdf: str | Path):
-    """
-    Concatenate all *.jpg*/*jpeg*/*png* files in *images_dir* (sorted
-    lexicographically) into a single PDF.
-    """
     images_dir = Path(images_dir)
     files = sorted(
-        [p for p in images_dir.iterdir() if p.suffix.lower() in {".jpg", ".jpeg", ".png"}]
+        p for p in images_dir.iterdir()
+        if p.suffix.lower() in {".jpg", ".jpeg", ".png"}
     )
     if not files:
         raise ValueError(f"No images found in {images_dir}")
 
-    first, *rest = [Image.open(p).convert("RGB") for p in files]
-    first.save(output_pdf, format="PDF", save_all=True, append_images=rest)
+    pdf = FPDF(unit="pt")           # use points so px == pt at 72 dpi
+    for img_path in files:
+        with Image.open(img_path) as im:
+            w, h = im.size          # dimensions in px
+        pdf.add_page(format=(w, h))
+        # x = y = 0, w = page width, h = page height (no scaling artefacts)
+        pdf.image(str(img_path), x=0, y=0, w=w, h=h)
+
+    pdf.output(str(output_pdf))
     print(f"✓ PDF created → {output_pdf}")
 
 
