@@ -67,6 +67,41 @@ def download_images_in_memory(reader_url: str):
                 raise RuntimeError(f"Error on page {idx + 1}: {e}")
     return images
 
+def download_and_stream_to_pdf(reader_url: str, output_path: str = "output.pdf"):
+    q = parse_qs(urlparse(reader_url).query)
+    total_pages = int(q.get("TotalPage", [0])[0])
+    ext = q.get("ext", ["jpg"])[0]
+    encoded_path = q.get("Url", [""])[0]
+
+    if not encoded_path or total_pages == 0:
+        raise ValueError("Reader URL missing 'Url' or 'TotalPage'")
+
+    rel_path = unquote(encoded_path).lstrip("/")
+    if not rel_path.endswith("/"):
+        rel_path += "/"
+    base_img_url = _make_base_img_url(reader_url, rel_path)
+    session = _create_session()
+
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    pdf_initialized = False
+
+    for page in range(1, total_pages + 1):
+        img_url = urljoin(base_img_url, f"{page:06d}.{ext}")
+        try:
+            img = _download_single_image(session, img_url)
+            if not pdf_initialized:
+                img.save(output_path, format="PDF", save_all=True, append_images=[])
+                pdf_initialized = True
+            else:
+                # Append to existing PDF by re-opening, merging, and overwriting (intermediate temp handling needed)
+                with BytesIO() as buffer:
+                    img.save(buffer, format="PDF")
+                    buffer.seek(0)
+                    with open(output_path, "ab") as f:
+                        f.write(buffer.read())
+        except Exception as e:
+            print(f"Failed to process page {page}: {e}")
+
 def images_to_pdf_bytes(images):
     pdf_bytes = BytesIO()
     first, *rest = images
