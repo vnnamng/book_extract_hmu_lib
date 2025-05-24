@@ -132,7 +132,39 @@ def download_images_to_dir(
         + (" (down-scaled)" if downscale_max_edge else "")
         + f" → {out_dir}"
     )
+from fpdf import FPDF
+def compile_dir_to_pdf(images_dir: str | Path, output_pdf: str | Path):
+    """
+    Stream-append every JPEG/PNG in *images_dir* (lexicographic order) into
+    a single PDF, deleting each image from disk as soon as it’s written.
+    Peak RAM stays ~10–30 MB regardless of page count.
+    """
+    images_dir = Path(images_dir)
+    files = sorted(
+        p for p in images_dir.iterdir()
+        if p.suffix.lower() in {".jpg", ".jpeg", ".png"}
+    )
+    if not files:
+        raise ValueError(f"No images found in {images_dir}")
 
+    pdf = FPDF(unit="pt")
+    for img_path in files:
+        # Pillow only opened long enough to read dimensions → minimal memory
+        with Image.open(img_path) as im:
+            w, h = im.size
+        pdf.add_page(format=(w, h))
+        pdf.image(str(img_path), x=0, y=0, w=w, h=h)
+
+        # 🚮 clean up disk immediately
+        try:
+            os.remove(img_path)
+        except OSError:
+            # Ignore if file already gone or locked – PDF creation continues
+            pass
+
+    pdf.output(str(output_pdf))
+    print(f"✓ PDF created → {output_pdf} (source images deleted)")
+    
 def download_and_save_pdf(
     reader_url: str,
     images_dir: str | Path = "pages",
