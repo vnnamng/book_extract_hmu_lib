@@ -1,123 +1,138 @@
 import concurrent.futures as cf
+import math
 import threading
 from io import BytesIO
 from urllib.parse import urlparse, parse_qs, unquote, urljoin
 
 import requests
 from PIL import Image
-from reportlab.pdfgen import canvas
+from fpdf import FPDF
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 
-# ──────────────────────────────
-# Thread-local session pool
-# ──────────────────────────────
+# ────────────────────────────────────────────────────────────────
+# Thread-local connection pooling
+# ────────────────────────────────────────────────────────────────
 _thread_local = threading.local()
 
 
-def _get_session(pool_maxsize: int):
-    """Return a session stored on the *current* thread, creating it once."""
-    if not hasattr(_thread_local, "session"):
+def _session(poolsize: int):
+    if not hasattr(_thread_local, "s"):
         s = requests.Session()
-        s.headers["User-Agent"] = (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90 Safari/537.36"
-        )
+        s.headers[
+            "User-Agent"
+        ] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/90"
         retries = Retry(
             total=3,
             backoff_factor=1,
             status_forcelist=[429, 500, 502, 503, 504],
             allowed_methods=["GET"],
         )
-        adapter = HTTPAdapter(max_retries=retries, pool_maxsize=pool_maxsize)
+        adapter = HTTPAdapter(max_retries=retries, pool_maxsize=poolsize)
         s.mount("http://", adapter)
         s.mount("https://", adapter)
-        _thread_local.session = s
-    return _thread_local.session
+        _thread_local.s = s
+    return _thread_local.s
 
 
-# ──────────────────────────────
-# Helpers
-# ──────────────────────────────
-def _make_base_img_url(reader_url: str, rel_path: str) -> str:
+# ────────────────────────────────────────────────────────────────
+# URL helpers
+# ────────────────────────────────────────────────────────────────
+def _make_base(reader_url: str, rel: str) -> str:
     parsed = urlparse(reader_url)
-    site_root = f"{parsed.scheme}://{parsed.netloc}"
-    if not rel_path.startswith("/"):
-        rel_path = "/" + rel_path
-    return urljoin(site_root, rel_path)
+    root = f"{parsed.scheme}://{parsed.netloc}"
+    if not rel.startswith("/"):
+        rel = "/" + rel
+    return urljoin(root, rel)
 
 
-def _parse_reader_url(reader_url: str):
+def _parse(reader_url: str):
     q = parse_qs(urlparse(reader_url).query)
-    total = int(q.get("TotalPage", [0])[0])
+    pages = int(q.get("TotalPage", [0])[0])
     ext = q.get("ext", ["jpg"])[0].lower()
-    encoded = q.get("Url", [""])[0]
-    if not encoded or total == 0:
+    rel = unquote(q.get("Url", [""])[0]).lstrip("/")
+    if not rel or pages == 0:
         raise ValueError("Reader URL missing 'Url' or 'TotalPage'")
-    rel = unquote(encoded).lstrip("/")
     if not rel.endswith("/"):
         rel += "/"
-    return total, ext, _make_base_img_url(reader_url, rel)
+    return pages, ext, _make_base(reader_url, rel)
 
 
-# ──────────────────────────────
-# Worker running in thread pool
-# ──────────────────────────────
-def _fetch_page(page: int, base_url: str, ext: str, pool_size: int):
-    url = urljoin(base_url, f"{page:06d}.{ext}")
-    s = _get_session(pool_size)
-    resp = s.get(url, timeout=30)
-    if not resp.ok:
-        raise RuntimeError(f"Page {page}: HTTP {resp.status_code}")
-    return page, resp.content
+# ────────────────────────────────────────────────────────────────
+# Downloader
+# ────────────────────────────────────────────────────────────────
+def _fetch(page: int, base: str, ext: str, poolsize: int):
+    url = urljoin(base, f"{page:06d}.{ext}")
+    r = _session(poolsize).get(url, timeout=30)
+    if not r.ok:
+        raise RuntimeError(f"Page {page}: HTTP {r.status_code}")
+    return page, r.content
 
 
-def _add_page_to_pdf(pdf_canvas, img_bytes: bytes):
-    """Minimal Pillow work: open, ensure RGB, then embed."""
-    with Image.open(BytesIO(img_bytes)) as img:
-        if img.mode != "RGB":
-            img = img.convert("RGB")
-        w, h = img.size
-        pdf_canvas.setPageSize((w, h))
-        pdf_canvas.drawInlineImage(img, 0, 0, w, h)
-        pdf_canvas.showPage()
-
-
-# ──────────────────────────────
-# Public API
-# ──────────────────────────────
-def download_and_stream_to_pdf_concurrent(
+# ────────────────────────────────────────────────────────────────
+# Main
+# ────────────────────────────────────────────────────────────────
+def download_and_build_pdf(
     reader_url: str,
     *,
-    max_workers: int = 32,       # ← higher default for more oomph
+    mem_budget_mb: int = 512,  # hard ceiling
+    max_threads: int = 64,      # upper bound if RAM allows
 ) -> BytesIO:
-    """High-speed, low-memory PDF builder for FullBookReader links."""
-    total_pages, ext, base_url = _parse_reader_url(reader_url)
+    total, ext, base = _parse(reader_url)
 
-    pdf_buffer = BytesIO()
-    pdf_canvas = canvas.Canvas(pdf_buffer, pageCompression=1)
+    # ----- 1️⃣  Probe first page: decide thread count --------------------------
+    probe_page, probe_bytes = _fetch(1, base, ext, poolsize=4)
+    img_size = len(probe_bytes)
 
-    next_to_write = 1
-    ready: dict[int, bytes] = {}
+    # memory:   threads × img_size   + growing‐PDF   + fudge
+    fudge = 32 * 1024 * 1024        # ~32 MB for Python objects, fonts, etc.
+    budget = mem_budget_mb * 1024 * 1024
+    threads = min(
+        max_threads,
+        max(2, (budget - fudge) // (img_size * 2)),  # ×2 ⇒ ½ RAM free for PDF
+    )
 
-    # pool_maxsize ≥ workers × 2 avoids blocked connections
-    pool_size = max_workers * 2
+    poolsize = threads * 2  # socket pool
 
-    with cf.ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = {
-            pool.submit(_fetch_page, p, base_url, ext, pool_size): p
-            for p in range(1, total_pages + 1)
+    # container for out-of-order results
+    ready: dict[int, bytes] = {probe_page: probe_bytes}
+    next_write = 1
+
+    # ----- 2️⃣  Set up PDF writer ---------------------------------------------
+    pdf = FPDF(unit="pt")  # points → 1 pt ≈ 1 px
+
+    def _add(page_bytes: bytes):
+        with Image.open(BytesIO(page_bytes)) as img:
+            w, h = img.size
+            pdf.add_page(format=(w, h))
+            # fpdf2 supports in-memory streams:
+            pdf.image(img, x=0, y=0, w=w, h=h)
+
+    # ----- 3️⃣  Kick off the remaining downloads ------------------------------
+    with cf.ThreadPoolExecutor(max_workers=threads) as pool:
+        fut_to_pg = {
+            pool.submit(_fetch, p, base, ext, poolsize): p
+            for p in range(2, total + 1)
         }
 
-        for fut in cf.as_completed(futures):
-            page, data = fut.result()
-            ready[page] = data
+        #  Process downloads as soon as they arrive
+        for fut in cf.as_completed(fut_to_pg):
+            pg, data = fut.result()
+            ready[pg] = data
 
-            while next_to_write in ready:
-                _add_page_to_pdf(pdf_canvas, ready.pop(next_to_write))
-                next_to_write += 1
+            while next_write in ready:
+                _add(ready.pop(next_write))
+                next_write += 1
 
-    pdf_canvas.save()
-    pdf_buffer.seek(0)
-    return pdf_buffer
+    # sanity: write any straggler (shouldn’t happen)
+    for pg in sorted(ready):
+        _add(ready[pg])
+
+    # ----- 4️⃣  Return BytesIO -------------------------------------------------
+    pdf_bytes = pdf.output(dest="S")
+    buf = BytesIO(pdf_bytes)
+    buf.seek(0)
+    return buf
+
+# download_and_build_pdf("https://thuvien.hmu.edu.vn/pages/cms/FullBookReader.aspx?Url=%2Fpages%2Fcms%2FTempDir%2Fbooks%2F202006150953-bc775b84-b0d0-49c1-b579-eddd928c30ee%2F%2FFullPreview&TotalPage=162&ext=jpg#page/4/mode/2up")
