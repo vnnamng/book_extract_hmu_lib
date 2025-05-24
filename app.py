@@ -3,7 +3,7 @@ from pathlib import Path
 import os
 from flask_cors import CORS
 
-from download_concurrent_disk_merge import  download_and_stream_to_pdf_concurrent # Adjust import if needed
+from download_optimised import  download_and_stream_to_pdf_concurrent # Adjust import if needed
 
 app = Flask(__name__)
 CORS(app)
@@ -28,7 +28,7 @@ def index():
 
         try:
             pdf_buffer = download_and_stream_to_pdf_concurrent(reader_url=url)
-            # Send PDF buffer as downloadable file response
+            # Send the file in the output path as a downloadable file response
             return send_file(
                 pdf_buffer,
                 mimetype="application/pdf",
@@ -65,3 +65,4 @@ def download_file(folder, filename):
         return response
 
     return send_from_directory(DOWNLOAD_DIR / folder, filename, as_attachment=True)
+
