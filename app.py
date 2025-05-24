@@ -3,7 +3,7 @@ from pathlib import Path
 import os
 from flask_cors import CORS
 
-from download_optimised import  download_and_build_pdf # Adjust import if needed
+from download_concurrent import  download_and_save_pdf # Adjust import if needed
 
 app = Flask(__name__)
 CORS(app)
@@ -27,10 +27,11 @@ def index():
         pdf_filename = folder_name + ".pdf"
 
         try:
-            pdf_buffer = download_and_build_pdf(reader_url=url)
+            pdf_path = Path("/tmp/{pdf_filename}")
+            download_and_save_pdf(url, images_dir="/tmp/pages", output_pdf=pdf_path)
             # Send the file in the output path as a downloadable file response
             return send_file(
-                pdf_buffer,
+                pdf_path,
                 mimetype="application/pdf",
                 as_attachment=True,
                 download_name=pdf_filename,
